@@ -158,15 +158,27 @@ def parse_and_validate_material(material_spec):
     fastener_spec = material_spec.get("扣件类型")
     fastener_params = get_fastener_params(fastener_spec)
     if fastener_params is None:
-        from .materials import list_materials
+        from .materials import list_anti_slip_fasteners, list_materials
         available = list_materials("fastener")
+        anti_slip = list_anti_slip_fasteners()
         errors.append(
             f"扣件类型 '{fastener_spec}' 不在材料库中，"
-            f"可用类型: {', '.join(available)}"
+            f"可用类型: {', '.join(available)}；"
+            f"其中可用于抗滑验算: {', '.join(anti_slip)}"
         )
     else:
-        parsed["扣件"] = fastener_params
-        parsed["扣件类型"] = fastener_spec
+        from .materials import is_fastener_suitable_for_anti_slip, list_anti_slip_fasteners
+        suitable, remark = is_fastener_suitable_for_anti_slip(fastener_spec)
+        if suitable is False:
+            anti_slip = list_anti_slip_fasteners()
+            errors.append(
+                f"扣件类型 '{fastener_spec}' {remark}，"
+                f"不适合用于模板支撑抗滑验算，"
+                f"请改用: {', '.join(anti_slip)}"
+            )
+        else:
+            parsed["扣件"] = fastener_params
+            parsed["扣件类型"] = fastener_spec
 
     if errors:
         raise ValidationError("; ".join(errors))

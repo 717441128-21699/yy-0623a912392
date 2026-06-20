@@ -121,9 +121,9 @@ def check_pole_capacity(params):
         "回转半径(i)": f"{round(i, 2)} mm",
         "长细比(λ)": round(lambda_, 1),
         "稳定系数(φ)": round(phi, 4),
-        "钢管截面积(A)": f"{round(A, 2)} mm²",
-        "压应力(σ)": f"{round(sigma, 1)} N/mm²",
-        "钢材强度设计值(f)": f"{f_design} N/mm²",
+        "钢管截面积(A)": f"{round(A, 2)} mm2",
+        "压应力(σ)": f"{round(sigma, 1)} N/mm2",
+        "钢材强度设计值(f)": f"{f_design} N/mm2",
     }
 
     if not result.passed:
@@ -178,8 +178,8 @@ def check_joist_deflection(params):
         "计算跨度(L)": f"{round(main_beam_spacing, 3)} m",
         "均布线荷载标准值(qk)": f"{round(q_standard, 3)} kN/m",
         "木方截面(b×h)": f"{b}×{h} mm",
-        "惯性矩(I)": f"{round(I, 2)} mm⁴",
-        "弹性模量(E)": f"{E} N/mm²",
+        "惯性矩(I)": f"{round(I, 2)} mm4",
+        "弹性模量(E)": f"{E} N/mm2",
         "计算挠度(ν)": f"{round(deflection, 2)} mm",
         "挠度限值([ν])": f"{round(deflection_limit, 2)} mm (L/{limit_ratio})",
     }
@@ -262,13 +262,13 @@ def check_main_beam_strength(params):
     result.details = {
         "计算跨度(L)": f"{round(L, 3)} m",
         "线荷载设计值(q)": f"{round(load_per_length, 2)} kN/m",
-        "最大弯矩(M)": f"{round(M, 1)} N·mm",
-        "抗弯截面模量(Wx)": f"{round(W_x, 2)} mm³",
-        "弯曲正应力(σ)": f"{round(sigma_m, 1)} N/mm²",
-        "抗弯强度设计值(f)": f"{f_m} N/mm²",
+        "最大弯矩(M)": f"{round(M, 1)} N-mm",
+        "抗弯截面模量(Wx)": f"{round(W_x, 2)} mm3",
+        "弯曲正应力(σ)": f"{round(sigma_m, 1)} N/mm2",
+        "抗弯强度设计值(f)": f"{f_m} N/mm2",
         "最大剪力(V)": f"{round(V, 1)} N",
-        "剪应力(τ)": f"{round(tau, 2)} N/mm²",
-        "抗剪强度设计值(fv)": f"{f_v} N/mm²",
+        "剪应力(τ)": f"{round(tau, 2)} N/mm2",
+        "抗剪强度设计值(fv)": f"{f_v} N/mm2",
     }
 
     if not result.passed:
