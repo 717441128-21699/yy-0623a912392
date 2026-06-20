@@ -372,3 +372,200 @@ def generate_output(parsed_data, results, warnings=None, output_path=None):
         save_report(content, output_path)
 
     return content
+
+
+CHECK_ITEMS = ["立杆承载力", "扣件抗滑", "次楞挠度", "主楞强度"]
+
+
+def _build_export_rows(member_results, row_errors=None):
+    """
+    构建结构化导出的行数据
+    返回: (result_rows, error_rows)
+        result_rows: 每个构件一行
+        error_rows: 每个参数错误一行
+    """
+    result_rows = []
+    for idx, mr in enumerate(member_results, 1):
+        params = mr.get("参数", {})
+        member_name = mr.get("构件名称", "")
+        member_type = mr.get("构件类型", "")
+        all_pass = mr.get("全部满足", False)
+        results_dict = mr.get("各项结果", {})
+
+        row = {
+            "序号": idx,
+            "构件名称": member_name,
+            "构件类型": member_type,
+            "总体结论": "通过" if all_pass else "不通过",
+        }
+
+        fail_items = []
+        all_suggestions = []
+        for item in CHECK_ITEMS:
+            if item in results_dict:
+                r = results_dict[item]
+                passed = r.passed
+                ratio = round(r.ratio, 3)
+                status = "OK" if passed else "FAIL"
+                row[f"{item}_状态"] = status
+                row[f"{item}_比值"] = ratio
+                if not passed:
+                    fail_items.append(item)
+                    if r.suggestions:
+                        all_suggestions.extend(r.suggestions[:2])
+
+        row["不满足项"] = "; ".join(fail_items)
+        row["主要建议"] = "; ".join(all_suggestions[:3])
+
+        row["立杆纵距(m)"] = params.get("立杆纵距", "")
+        row["立杆横距(m)"] = params.get("立杆横距", "")
+        row["步距(m)"] = params.get("步距", "")
+        row["次楞间距(mm)"] = params.get("次楞间距", "")
+        row["主楞间距(m)"] = params.get("主楞间距", "")
+        row["混凝土厚度(mm)"] = params.get("混凝土厚度", params.get("梁宽", ""))
+        if member_type == "梁":
+            row["梁宽(mm)"] = params.get("梁宽", "")
+            row["梁高(mm)"] = params.get("梁高", "")
+        else:
+            row["支撑高度(m)"] = params.get("支撑高度", "")
+        row["立杆钢管"] = params.get("立杆钢管规格", "")
+        row["次楞木方"] = params.get("次楞木方规格", "")
+        row["主楞类型"] = params.get("主楞类型", "")
+        row["扣件类型"] = params.get("扣件类型", "")
+        row["施工活荷载(kN/m2)"] = params.get("施工活荷载", "")
+        result_rows.append(row)
+
+    error_rows = []
+    if row_errors:
+        for err in row_errors:
+            error_rows.append({
+                "行号": err.get("行号", ""),
+                "构件名": err.get("构件名", ""),
+                "错误信息": err.get("错误", ""),
+            })
+
+    return result_rows, error_rows
+
+
+CSV_RESULT_COLUMNS = [
+    "序号", "构件名称", "构件类型", "总体结论",
+    "立杆承载力_状态", "立杆承载力_比值",
+    "扣件抗滑_状态", "扣件抗滑_比值",
+    "次楞挠度_状态", "次楞挠度_比值",
+    "主楞强度_状态", "主楞强度_比值",
+    "不满足项", "主要建议",
+    "立杆纵距(m)", "立杆横距(m)", "步距(m)", "次楞间距(mm)", "主楞间距(m)",
+    "混凝土厚度(mm)", "梁宽(mm)", "梁高(mm)", "支撑高度(m)",
+    "立杆钢管", "次楞木方", "主楞类型", "扣件类型", "施工活荷载(kN/m2)"
+]
+
+CSV_ERROR_COLUMNS = ["行号", "构件名", "错误信息"]
+
+
+def export_structured_results(member_results, output_path, file_format="csv", row_errors=None, project_info=None):
+    """
+    导出结构化结果表到 CSV 或 Excel
+    file_format: "csv" 或 "xlsx"
+    """
+    file_format = file_format.lower().lstrip(".")
+    result_rows, error_rows = _build_export_rows(member_results, row_errors)
+
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+
+    if file_format in ("csv",):
+        with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+            import csv as _csv
+            writer = _csv.writer(f)
+            if project_info:
+                writer.writerow(["工程名称", project_info.get("工程名称", "")])
+                writer.writerow(["计算人", project_info.get("计算人", "")])
+                writer.writerow(["计算日期", project_info.get("计算日期", "")])
+                writer.writerow([])
+
+            writer.writerow(["==== 验算结果"])
+            writer.writerow(CSV_RESULT_COLUMNS)
+            for row in result_rows:
+                writer.writerow([row.get(col, "") for col in CSV_RESULT_COLUMNS])
+
+            if error_rows:
+                writer.writerow([])
+                writer.writerow(["==== 参数错误行"])
+                writer.writerow(CSV_ERROR_COLUMNS)
+                for err in error_rows:
+                    writer.writerow([err.get(col, "") for col in CSV_ERROR_COLUMNS])
+
+        return output_path
+
+    elif file_format in ("xlsx", "xls"):
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            raise RuntimeError("未安装 openpyxl，无法导出 Excel，请先安装: pip install openpyxl")
+
+        wb = Workbook()
+
+        ws_result = wb.active
+        ws_result.title = "验算结果"
+
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        fail_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+        pass_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        center = Alignment(horizontal="center", vertical="center")
+
+        current_row = 1
+        if project_info:
+            ws_result.cell(row=current_row, column=1, value="工程名称").font = Font(bold=True)
+            ws_result.cell(row=current_row, column=2, value=project_info.get("工程名称", ""))
+            current_row += 1
+            ws_result.cell(row=current_row, column=1, value="计算人").font = Font(bold=True)
+            ws_result.cell(row=current_row, column=2, value=project_info.get("计算人", ""))
+            current_row += 1
+            ws_result.cell(row=current_row, column=1, value="计算日期").font = Font(bold=True)
+            ws_result.cell(row=current_row, column=2, value=project_info.get("计算日期", ""))
+            current_row += 2
+
+        header_row_idx = current_row
+        for col_idx, col_name in enumerate(CSV_RESULT_COLUMNS, 1):
+            cell = ws_result.cell(row=header_row_idx, column=col_idx, value=col_name)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center
+        current_row += 1
+
+        for row_data in result_rows:
+            overall = row_data.get("总体结论", "")
+            for col_idx, col_name in enumerate(CSV_RESULT_COLUMNS, 1):
+                val = row_data.get(col_name, "")
+                cell = ws_result.cell(row=current_row, column=col_idx, value=val)
+                cell.alignment = center
+                if overall == "不通过":
+                    cell.fill = fail_fill
+                elif col_name.endswith("_状态") and val == "OK":
+                    cell.fill = pass_fill
+            current_row += 1
+
+        for col_idx in range(1, len(CSV_RESULT_COLUMNS) + 1):
+            ws_result.column_dimensions[get_column_letter(col_idx)].width = max(12, len(CSV_RESULT_COLUMNS[col_idx - 1]) + 2)
+
+        if error_rows:
+            ws_err = wb.create_sheet("参数错误行")
+            for col_idx, col_name in enumerate(CSV_ERROR_COLUMNS, 1):
+                cell = ws_err.cell(row=1, column=col_idx, value=col_name)
+                cell.font = header_font
+                cell.fill = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+                cell.alignment = center
+            for r_idx, err_data in enumerate(error_rows, 2):
+                for col_idx, col_name in enumerate(CSV_ERROR_COLUMNS, 1):
+                    cell = ws_err.cell(row=r_idx, column=col_idx, value=err_data.get(col_name, ""))
+                    cell.alignment = center
+            for col_idx in range(1, len(CSV_ERROR_COLUMNS) + 1):
+                ws_err.column_dimensions[get_column_letter(col_idx)].width = max(12, len(CSV_ERROR_COLUMNS[col_idx - 1]) + 2)
+
+        wb.save(output_path)
+        return output_path
+
+    else:
+        raise ValueError(f"不支持的导出格式: {file_format}，请使用 csv 或 xlsx")

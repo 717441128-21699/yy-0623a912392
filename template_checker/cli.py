@@ -28,7 +28,7 @@ def _is_csv_file(filepath):
     return False
 
 
-def run_check(input_file, output_file=None, verbose=False):
+def run_check(input_file, output_file=None, verbose=False, export_format=None, export_path=None):
     is_csv = False
     try:
         is_csv = _is_csv_file(input_file)
@@ -36,12 +36,13 @@ def run_check(input_file, output_file=None, verbose=False):
         pass
 
     if is_csv:
-        return _run_csv_check(input_file, output_file, verbose)
+        return _run_csv_check(input_file, output_file, verbose, export_format, export_path)
     else:
-        return _run_yaml_check(input_file, output_file, verbose)
+        return _run_yaml_check(input_file, output_file, verbose, export_format, export_path)
 
 
-def _run_yaml_check(input_file, output_file=None, verbose=False):
+def _run_yaml_check(input_file, output_file=None, verbose=False, export_format=None, export_path=None):
+    from .output import export_structured_results
     try:
         parsed_data, warnings = parse_file(input_file)
     except ValidationError as e:
@@ -68,8 +69,26 @@ def _run_yaml_check(input_file, output_file=None, verbose=False):
             generate_output(parsed_data, result, warnings, output_file)
             print(f"  报告已保存至: {output_file}")
 
+        if export_format:
+            base_path = output_file if output_file else input_file
+            ext = ".csv" if export_format in ("csv",) else ".xlsx"
+            if export_path:
+                ex_path = export_path
+            else:
+                ex_path = os.path.splitext(base_path)[0] + "_结果表" + ext
+            try:
+                export_structured_results(
+                    [result], ex_path, file_format=export_format,
+                    project_info=parsed_data
+                )
+                print(f"[成功] 结构化结果表已导出: {ex_path}")
+            except Exception as ex:
+                print(f"[错误] 导出结构化结果失败: {ex}")
+
         print()
         print(output)
+
+        return -1 if not result["全部满足"] else 0
 
     else:
         print(f"[信息] 参数解析成功，共 {len(parsed_data['构件列表'])} 个构件，正在批量验算...")
@@ -88,18 +107,49 @@ def _run_yaml_check(input_file, output_file=None, verbose=False):
             generate_output(parsed_data, results, warnings, output_file)
             print(f"\n[信息] 报告已保存至: {output_file}")
 
+        if export_format:
+            base_path = output_file if output_file else input_file
+            ext = ".csv" if export_format in ("csv",) else ".xlsx"
+            if export_path:
+                ex_path = export_path
+            else:
+                ex_path = os.path.splitext(base_path)[0] + "_结果表" + ext
+            try:
+                export_structured_results(
+                    results, ex_path, file_format=export_format,
+                    project_info=parsed_data
+                )
+                print(f"[成功] 结构化结果表已导出: {ex_path}")
+            except Exception as ex:
+                print(f"[错误] 导出结构化结果失败: {ex}")
+
         print()
         print(output)
 
-    return 0
+        failed = [r for r in results if not r["全部满足"]]
+        return -1 if failed else 0
 
 
-def _run_csv_check(input_file, output_file=None, verbose=False):
+def _run_csv_check(input_file, output_file=None, verbose=False, export_format=None, export_path=None):
+    from .output import export_structured_results
     try:
-        project_info, members, row_errors, warnings = parse_csv_file(input_file)
+        project_info, members, row_errors, warnings, preview = parse_csv_file(input_file)
     except ValidationError as e:
         print(f"[错误] CSV文件解析失败: {e}")
         return 1
+
+    print("[信息] ===== 导入预览汇总 =====")
+    print(f"  数据总行数:   {preview['总行数']}")
+    print(f"  成功识别构件: {preview['识别构件数']} 个")
+    print(f"    - 楼板:     {preview['楼板数']} 个")
+    print(f"    - 梁:       {preview['梁数']} 个")
+    print(f"  参数错误行数: {preview['错误行数']} 行")
+    print(f"  默认值继承:   {'是' if preview['默认值继承'] else '否'}")
+    if preview["识别字段"]:
+        print(f"  已识别字段:   {', '.join(preview['识别字段'])}")
+    if preview["未知表头"]:
+        print(f"  [警告] 未识别表头: {', '.join(preview['未知表头'])}")
+    print()
 
     if warnings:
         print("[警告] 参数警告:")
@@ -137,11 +187,95 @@ def _run_csv_check(input_file, output_file=None, verbose=False):
         save_report(output, output_file)
         print(f"\n[信息] 报告已保存至: {output_file}")
 
+    if export_format:
+        base_path = output_file if output_file else input_file
+        ext = ".csv" if export_format in ("csv",) else ".xlsx"
+        if export_path:
+            ex_path = export_path
+        else:
+            ex_path = os.path.splitext(base_path)[0] + "_结果表" + ext
+        try:
+            export_structured_results(
+                results, ex_path, file_format=export_format,
+                row_errors=row_errors, project_info=project_info
+            )
+            print(f"[成功] 结构化结果表已导出: {ex_path}")
+        except Exception as ex:
+            print(f"[错误] 导出结构化结果失败: {ex}")
+
     print()
     print(output)
 
+    failed = [r for r in results if not r["全部满足"]]
+    if failed:
+        return -1
     if row_errors:
         return 2
+    return 0
+
+
+def _run_compare(input_file, output_file=None, export_format=None, export_path=None):
+    from .compare import compare_schemes, generate_compare_report
+    from .output import export_structured_results, save_report
+    try:
+        import yaml
+    except ImportError:
+        print("[错误] 未安装 PyYAML，请先安装: pip install pyyaml")
+        return 1
+
+    try:
+        with open(input_file, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+    except Exception as e:
+        print(f"[错误] 读取对比文件失败: {e}")
+        return 1
+
+    if not raw or "方案列表" not in raw or not isinstance(raw["方案列表"], list):
+        print("[错误] 对比文件格式错误，需包含'方案列表'数组")
+        return 1
+
+    schemes = raw["方案列表"]
+    if len(schemes) < 2:
+        print(f"[警告] 方案数量不足 ({len(schemes)} 个)，至少需要 2 个方案才有对比意义")
+
+    base = {k: v for k, v in raw.items() if k != "方案列表"}
+    print(f"[信息] 加载对比文件成功，共 {len(schemes)} 组方案")
+    print(f"[信息] 构件: {base.get('构件名称', '')} ({base.get('构件类型', '')})")
+    print(f"[信息] 正在进行多方案对比验算...")
+
+    scheme_results, recommended = compare_schemes(base, schemes)
+    report = generate_compare_report(base, scheme_results, recommended)
+
+    if output_file:
+        save_report(report, output_file)
+        print(f"[信息] 对比报告已保存至: {output_file}")
+
+    if export_format:
+        member_results = []
+        for sr in scheme_results:
+            cr = sr["验算结果"]
+            cr["构件名称"] = f"{base.get('构件名称', '构件')}[{sr['方案名']}]"
+            cr["_方案"] = sr["方案名"]
+            cr["_是否推荐"] = sr["是否推荐"]
+            cr["_综合用量指数"] = sr["材料用量"]["综合用量指数"]
+            member_results.append(cr)
+        ext = ".csv" if export_format in ("csv",) else ".xlsx"
+        if export_path:
+            ex_path = export_path
+        else:
+            ex_path = os.path.splitext(output_file if output_file else input_file)[0] + "_方案对比" + ext
+        try:
+            export_structured_results(member_results, ex_path, file_format=export_format, project_info=base)
+            print(f"[成功] 方案对比结构化结果已导出: {ex_path}")
+        except Exception as ex:
+            print(f"[错误] 导出失败: {ex}")
+
+    print()
+    print(report)
+
+    all_passed = [r for r in scheme_results if r["是否通过"]]
+    if not all_passed:
+        return -1
     return 0
 
 
@@ -304,6 +438,14 @@ def main():
     check_parser.add_argument("input", help="参数文件路径 (YAML 或 CSV/表格格式)")
     check_parser.add_argument("-o", "--output", help="输出报告文件路径")
     check_parser.add_argument("-v", "--verbose", action="store_true", help="显示详细信息")
+    check_parser.add_argument("-e", "--export", help="同时导出结构化结果表，格式: csv 或 xlsx")
+    check_parser.add_argument("--export-path", help="结构化结果导出路径（默认与output同目录）")
+
+    compare_parser = subparsers.add_parser("compare", help="多方案对比验算（同一构件对比多组参数）")
+    compare_parser.add_argument("input", help="方案对比YAML文件路径")
+    compare_parser.add_argument("-o", "--output", help="输出对比报告文件路径")
+    compare_parser.add_argument("-e", "--export", help="同时导出结构化结果表，格式: csv 或 xlsx")
+    compare_parser.add_argument("--export-path", help="结构化结果导出路径")
 
     materials_parser = subparsers.add_parser("materials", help="材料库管理")
     materials_sub = materials_parser.add_subparsers(dest="subcommand", help="材料库子命令")
@@ -330,7 +472,13 @@ def main():
         if not os.path.exists(args.input):
             print(f"[错误] 文件不存在: {args.input}")
             return 1
-        return run_check(args.input, args.output, args.verbose)
+        return run_check(args.input, args.output, args.verbose, args.export, args.export_path)
+
+    elif args.command == "compare":
+        if not os.path.exists(args.input):
+            print(f"[错误] 文件不存在: {args.input}")
+            return 1
+        return _run_compare(args.input, args.output, args.export, args.export_path)
 
     elif args.command == "materials":
         if not args.subcommand:

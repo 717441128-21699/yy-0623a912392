@@ -20,35 +20,73 @@ from .materials import (
 
 CSV_COLUMN_MAP = {
     "构件名称": "构件名称",
+    "构件名": "构件名称",
+    "构件编号": "构件名称",
+    "编号": "构件名称",
+    "名称": "构件名称",
+
     "构件类型": "构件类型",
+    "类型": "构件类型",
+    "构件": "构件类型",
 
     "梁宽": "梁宽",
     "梁高": "梁高",
     "混凝土厚度": "混凝土厚度",
     "板厚": "混凝土厚度",
+    "厚度": "混凝土厚度",
+    "砼厚": "混凝土厚度",
+    "h": "混凝土厚度",
 
     "立杆纵距": "立杆纵距",
+    "纵距": "立杆纵距",
     "立杆横距": "立杆横距",
+    "横距": "立杆横距",
     "步距": "步距",
     "次楞间距": "次楞间距",
+    "次楞": "次楞间距",
     "主楞间距": "主楞间距",
+    "主楞跨距": "主楞间距",
     "扫地杆高度": "扫地杆高度",
 
     "立杆钢管": "立杆钢管",
+    "钢管": "立杆钢管",
+    "立杆": "立杆钢管",
+    "钢管规格": "立杆钢管",
+    "立杆规格": "立杆钢管",
     "次楞木方": "次楞木方",
+    "木方": "次楞木方",
+    "次楞规格": "次楞木方",
     "主楞类型": "主楞类型",
+    "主楞": "主楞类型",
+    "主楞规格": "主楞类型",
     "扣件类型": "扣件类型",
+    "扣件": "扣件类型",
+
+    "梁截面尺寸": "梁截面尺寸",
+    "梁截面": "梁截面尺寸",
+    "梁尺寸": "梁截面尺寸",
+    "截面尺寸": "梁截面尺寸",
 
     "施工活荷载": "施工活荷载",
     "活荷载": "施工活荷载",
+    "活载": "施工活荷载",
     "振捣荷载": "振捣荷载",
+    "振捣": "振捣荷载",
     "模板自重": "模板自重",
+    "模板": "模板自重",
 
     "支撑高度": "支撑高度",
     "支模高度": "支撑高度",
+    "模板高度": "支撑高度",
+    "架高": "支撑高度",
 
     "模板类型": "模板类型",
     "模板厚度": "模板厚度",
+
+    "备注": "备注",
+    "说明": "备注",
+    "comment": "备注",
+    "remark": "备注",
 }
 
 
@@ -70,30 +108,51 @@ def _detect_delimiter(line):
     return None
 
 
-def _normalize_row(row, headers):
+def _build_header_field_map(headers):
+    """
+    根据表头列表构建 "原始表头 -> 标准字段映射。自动识别空表头自动跳过，识别到的别名自动映射到标准字段。
+
+    返回: (field_to_idx: dict, key=标准字段名 -> value=列索引
+            unknown_headers: list, 未识别的表头文本列表
+    """
+    field_to_idx = {}
+    unknown_headers = []
+    for idx, raw_header in enumerate(headers):
+        h = raw_header.strip()
+        if not h:
+            continue
+        mapped = CSV_COLUMN_MAP.get(h)
+        if mapped and mapped != "备注":
+            if mapped not in field_to_idx:
+                field_to_idx[mapped] = idx
+        elif mapped != "备注":
+            unknown_headers.append(h)
+    return field_to_idx, unknown_headers
+
+
+def _extract_values(raw_cells, field_to_idx):
+    """根据字段->索引映射，从行单元格中提取字段值"""
     normalized = {}
-    n_headers = len(headers)
-    n_cells = len(row)
-
-    if n_cells == n_headers:
-        pairs = list(zip(headers, row))
-    elif n_cells > n_headers:
-        pairs = list(zip(headers, row[:n_headers]))
-    else:
-        padded_row = row + [""] * (n_headers - n_cells)
-        pairs = list(zip(headers, padded_row))
-
-    for header, cell in pairs:
-        raw_header = header.strip()
-        value = cell.strip()
-        mapped_key = CSV_COLUMN_MAP.get(raw_header, raw_header)
-        if value:
-            normalized[mapped_key] = value
+    for field, idx in field_to_idx.items():
+        if idx < len(raw_cells):
+            value = raw_cells[idx].strip()
+            if value:
+                normalized[field] = value
     return normalized
 
 
 def _build_member_dict(normalized_row, defaults):
     member = dict(defaults) if defaults else {}
+
+    if "梁截面尺寸" in normalized_row and ("梁宽" not in normalized_row or "梁高" not in normalized_row):
+        sec = normalized_row["梁截面尺寸"]
+        import re
+        m = re.match(r"\s*(\d+(?:\.\d+)?)\s*[xX×*]\s*(\d+(?:\.\d+)?)\s*", str(sec))
+        if m:
+            if "梁宽" not in normalized_row:
+                normalized_row["梁宽"] = m.group(1) + "mm"
+            if "梁高" not in normalized_row:
+                normalized_row["梁高"] = m.group(2) + "mm"
 
     for key, value in normalized_row.items():
         if key in CSV_MATERIAL_KEYS:
@@ -131,12 +190,20 @@ def _build_member_dict(normalized_row, defaults):
 
 def parse_csv_file(filepath):
     """
-    解析CSV或表格式文本文件，逐行校验，不中断。
-    返回: (project_info, members, errors, warnings)
+    解析CSV或表格式文本文件，逐行校验，不中断。支持任意表头顺序、自动跳过空列。
+    返回: (project_info, members, errors, warnings, preview)
         project_info: dict, 工程信息
         members: list, 成功解析的构件列表
         errors: list of dict, 错误信息，每项包含 {行号, 构件名, 错误}
         warnings: list, 警告信息
+        preview: dict, 预览汇总，包含:
+            - 总行数: 数据行数
+            - 识别构件数: 成功解析的构件数
+            - 错误行数: 参数错误行数
+            - 楼板数: 楼板构件数
+            - 梁数: 梁构件数
+            - 识别字段: 成功识别的字段列表
+            - 未知表头: 未识别的表头列表
     """
     if not os.path.exists(filepath):
         raise ValidationError(f"文件不存在: {filepath}")
@@ -176,8 +243,6 @@ def parse_csv_file(filepath):
             elif stripped.startswith("#计算日期:") or stripped.startswith("# 计算日期:"):
                 val = stripped.split(":", 1)[1].strip()
                 project_info["计算日期"] = val
-            elif stripped.startswith("#默认") or stripped.startswith("# 默认"):
-                pass
             continue
         content_lines.append(stripped)
         raw_line_numbers.append(line_no)
@@ -186,44 +251,50 @@ def parse_csv_file(filepath):
         raise ValidationError("文件内容不足，至少需要表头和一行数据")
 
     header_idx = None
+    delimiter = None
+
     for i, line in enumerate(content_lines):
-        first_col = line.split(",")[0].strip() if "," in line else (line.split("\t")[0].strip() if "\t" in line else (line.split("|")[0].strip() if "|" in line else (line.split(";")[0].strip() if ";" in line else line.strip())))
-        if first_col in ("构件名称", "构件名", "构件编号"):
-            header_idx = i
-            break
+        delim = _detect_delimiter(line)
+        if not delim:
+            continue
+        cells = [c.strip() for c in line.split(delim)]
+        if cells and cells[0] in ("构件名称", "构件名", "构件编号", "名称", "编号", "默认值", "默认", "DEFAULT", "default"):
+            if cells[0] in ("构件名称", "构件名", "构件编号", "名称", "编号"):
+                header_idx = i
+                delimiter = delim
+                break
 
     if header_idx is None:
         raise ValidationError(
-            "找不到表头行，表头第一列必须是'构件名称'。请检查文件格式或使用竖线(|)等分隔符。"
-        )
+            "找不到表头行（第一列必须是'构件名称'或其别名）。请检查文件格式。")
 
     header_line = content_lines[header_idx]
-    delimiter = _detect_delimiter(header_line)
-
     if delimiter is None:
-        raise ValidationError(
-            "无法识别分隔符，请使用逗号(,)、制表符(Tab)、竖线(|)或分号(;)作为列分隔符"
-        )
+        delimiter = _detect_delimiter(header_line)
 
-    headers = [h.strip() for h in header_line.split(delimiter)]
-    headers = [h for h in headers if h]
+    raw_headers = [h.strip() for h in header_line.split(delimiter)]
 
-    if not headers:
-        raise ValidationError("表头为空")
+    field_to_idx, unknown_headers = _build_header_field_map(raw_headers)
 
-    default_row = None
+    if "构件名称" not in field_to_idx:
+        raise ValidationError("表头中找不到'构件名称'或其别名（构件名/构件编号/名称/编号）")
+
+    default_dict = {}
     for i in range(header_idx):
         line = content_lines[i]
-        first_col = line.split(delimiter)[0].strip()
-        if first_col in ("默认值", "默认", "DEFAULT", "default", "Defaults"):
-            default_row = [c.strip() for c in line.split(delimiter)]
+        delim = _detect_delimiter(line) or delimiter
+        cells = [c.strip() for c in line.split(delim)]
+        if cells and cells[0] in ("默认值", "默认", "DEFAULT", "default", "Defaults"):
+            default_values = _extract_values(cells, field_to_idx)
+            if "构件名称" in default_values:
+                del default_values["构件名称"]
+            default_dict = _build_member_dict(default_values, {})
             break
 
-    if default_row is not None:
-        default_normalized = _normalize_row(default_row[1:], headers[1:])
-        defaults = _build_member_dict(default_normalized, {})
-
     data_start_idx = header_idx + 1
+
+    slab_count = 0
+    beam_count = 0
 
     for row_idx in range(data_start_idx, len(content_lines)):
         line = content_lines[row_idx]
@@ -231,17 +302,21 @@ def parse_csv_file(filepath):
 
         raw_cells = [c.strip() for c in line.split(delimiter)]
 
-        if len(raw_cells) < 2:
+        if not raw_cells or all(not c for c in raw_cells):
+            continue
+
+        normalized = _extract_values(raw_cells, field_to_idx)
+        member_name = normalized.get("构件名称", f"第{actual_line_no}行")
+
+        if not normalized or (len(normalized) == 1 and "构件名称" in normalized):
             errors.append({
                 "行号": actual_line_no,
-                "构件名": raw_cells[0] if raw_cells else "",
-                "错误": "列数不足"
+                "构件名": member_name,
+                "错误": "该行无可识别的有效参数，可能全为空行或格式错误"
             })
             continue
 
-        normalized = _normalize_row(raw_cells, headers)
-        member_name = normalized.get("构件名称", f"第{actual_line_no}行")
-        member_dict = _build_member_dict(normalized, defaults)
+        member_dict = _build_member_dict(normalized, default_dict)
 
         if "构件名称" not in member_dict:
             member_dict["构件名称"] = member_name
@@ -252,6 +327,10 @@ def parse_csv_file(filepath):
             for w in member_warnings:
                 warnings.append(f"[{member_name}] {w}")
             members.append(parsed)
+            if parsed.get("构件类型") == "楼板":
+                slab_count += 1
+            elif parsed.get("构件类型") == "梁":
+                beam_count += 1
         except ValidationError as e:
             errors.append({
                 "行号": actual_line_no,
@@ -261,4 +340,17 @@ def parse_csv_file(filepath):
 
     project_info["构件列表"] = members
 
-    return project_info, members, errors, warnings
+    total_data_rows = len(content_lines) - data_start_idx
+
+    preview = {
+        "总行数": total_data_rows,
+        "识别构件数": len(members),
+        "错误行数": len(errors),
+        "楼板数": slab_count,
+        "梁数": beam_count,
+        "识别字段": sorted(field_to_idx.keys()),
+        "未知表头": unknown_headers,
+        "默认值继承": bool(default_dict),
+    }
+
+    return project_info, members, errors, warnings, preview
